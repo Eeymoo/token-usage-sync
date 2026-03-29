@@ -1,0 +1,22 @@
+{
+  "name": "token-usage-sync",
+  "version": "1.0.0",
+  "description": "Low-latency LLM API proxy with QuestDB token usage logging",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test",
+    "coverage": "c8 node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@dqbd/tiktoken": "^1.0.22",
+    "@questdb/nodejs-client": "^4.2.0",
+    "http-proxy": "^1.18.1"
+  },
+  "devDependencies": {
+    "c8": "^11.0.0"
+  }
+}

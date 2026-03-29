@@ -1,0 +1,54 @@
+services:
+  internal-nginx:
+    image: nginx:1.27-alpine
+    container_name: token-usage-sync-gateway
+    restart: unless-stopped
+    depends_on:
+      token-usage-sync:
+        condition: service_healthy
+    ports:
+      - "${PORT:-12475}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  token-usage-sync:
+    build:
+      context: .
+    image: token-usage-sync:latest
+    container_name: token-usage-sync
+    restart: unless-stopped
+    expose:
+      - "8787"
+    environment:
+      PORT: 8787
+      QUESTDB_CONFIG: "${QUESTDB_CONFIG:-http::addr=host.docker.internal:9000}"
+      NEW_API_BASE_URL: "${NEW_API_BASE_URL:-https://new-api.onemue.cn}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://new-api.onemue.cn}"
+      ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-https://new-api.onemue.cn}"
+      GEMINI_BASE_URL: "${GEMINI_BASE_URL:-https://new-api.onemue.cn}"
+      OPENAI_PROXY_PREFIX: "${OPENAI_PROXY_PREFIX:-/openai}"
+      ANTHROPIC_PROXY_PREFIX: "${ANTHROPIC_PROXY_PREFIX:-/anthropic}" 
+      GEMINI_PROXY_PREFIX: "${GEMINI_PROXY_PREFIX:-/gemini}"
+      REQUEST_CAPTURE_LIMIT_BYTES: "${REQUEST_CAPTURE_LIMIT_BYTES:-1048576}"
+      RESPONSE_CAPTURE_LIMIT_BYTES: "${RESPONSE_CAPTURE_LIMIT_BYTES:-2097152}"
+      CONTENT_LIMIT_CHARS: "${CONTENT_LIMIT_CHARS:-20000}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

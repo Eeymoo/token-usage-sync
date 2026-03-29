@@ -1,0 +1,45 @@
+name: Build package on tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'release-*'
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Create package archive
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --output "dist/token-usage-sync-${GITHUB_REF_NAME}.tar.gz" HEAD
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: token-usage-sync-${{ github.ref_name }}
+          path: dist/token-usage-sync-${{ github.ref_name }}.tar.gz
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/token-usage-sync-${{ github.ref_name }}.tar.gz
