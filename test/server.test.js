@@ -113,13 +113,23 @@ function httpRequest(port, path, options = {}) {
   });
 }
 
-test("server handles health and missing route locally", async () => {
+test("server handles health, hash-api-key, and missing route locally", async () => {
   const { app, port } = await startApp();
 
   try {
     const health = await httpRequest(port, "/healthz");
     assert.equal(health.statusCode, 200);
     assert.deepEqual(JSON.parse(health.body), { ok: true });
+
+    const hashed = await httpRequest(port, "/hash-api-key?value=sk-test-123");
+    assert.equal(hashed.statusCode, 200);
+    assert.deepEqual(JSON.parse(hashed.body), {
+      api_key_hash: hashApiKey("sk-test-123"),
+    });
+
+    const missingValue = await httpRequest(port, "/hash-api-key");
+    assert.equal(missingValue.statusCode, 400);
+    assert.match(missingValue.body, /Missing required query parameter: value/);
 
     const missing = await httpRequest(port, "/unknown");
     assert.equal(missing.statusCode, 404);

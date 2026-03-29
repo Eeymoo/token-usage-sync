@@ -16,7 +16,7 @@ function addInt(sender, column, value) {
 
 function addBool(sender, column, value) {
   if (typeof value === "boolean") {
-    sender.boolColumn(column, value);
+    sender.booleanColumn(column, value);
   }
 }
 
@@ -47,14 +47,19 @@ class QuestDbWriter {
 
     this.pending = this.pending
       .then(async () => {
-        const sender = await this.getSender();
+        let sender = await this.getSender();
         if (!sender) {
           return;
         }
 
-        await this.writeStatsRow(sender, logRecord);
-        await this.writeRecordRow(sender, logRecord);
-        await sender.flush();
+        try {
+          await this.writeStatsRow(sender, logRecord);
+          await this.writeRecordRow(sender, logRecord);
+          await sender.flush();
+        } catch (error) {
+          sender.reset();
+          throw error;
+        }
       })
       .catch((error) => {
         console.error("QuestDB write failed:", error);

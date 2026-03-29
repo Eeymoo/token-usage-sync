@@ -37,8 +37,11 @@ function createSender() {
     intColumn(name, value) {
       this.calls.push(["int", name, value]);
     },
-    boolColumn(name, value) {
+    booleanColumn(name, value) {
       this.calls.push(["bool", name, value]);
+    },
+    reset() {
+      this.calls.push(["reset"]);
     },
     async at(timestamp, unit) {
       this.calls.push(["at", timestamp, unit]);

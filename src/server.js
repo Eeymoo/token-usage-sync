@@ -56,7 +56,8 @@ function detectDirectRoute(config, urlPath) {
   }
 
   if (
-    (urlPath.startsWith("/v1beta/models/") || urlPath.startsWith("/v1/models/")) &&
+    (urlPath.startsWith("/v1beta/models/") ||
+      urlPath.startsWith("/v1/models/")) &&
     (urlPath.includes(":generateContent") ||
       urlPath.includes(":streamGenerateContent"))
   ) {
@@ -299,6 +300,19 @@ function createApp() {
       return;
     }
 
+    if (requestUrl.pathname === "/hash-api-key") {
+      const value = requestUrl.searchParams.get("value");
+      if (!value) {
+        sendJson(res, 400, {
+          error: "invalid_request",
+          message: "Missing required query parameter: value",
+        });
+        return;
+      }
+      sendJson(res, 200, { api_key_hash: hashApiKey(value) });
+      return;
+    }
+
     const route = resolveRoute(config, requestUrl.pathname);
     if (!route) {
       sendJson(res, 404, {
@@ -314,10 +328,11 @@ function createApp() {
       provider: route.provider,
       writer,
       startedAt: Date.now(),
-      upstreamPath: stripPrefix(requestUrl.pathname, route.prefix) + requestUrl.search,
+      upstreamPath:
+        stripPrefix(requestUrl.pathname, route.prefix) + requestUrl.search,
       apiKind: detectApiKind(
         route.provider,
-        stripPrefix(requestUrl.pathname, route.prefix) + requestUrl.search
+        stripPrefix(requestUrl.pathname, route.prefix) + requestUrl.search,
       ),
       category: null,
       isStream: false,
