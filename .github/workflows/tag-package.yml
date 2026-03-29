@@ -1,4 +1,4 @@
-name: Build package on tag
+name: Build package and image on tag
 
 on:
   push:
@@ -7,10 +7,11 @@ on:
       - 'release-*'
 
 jobs:
-  package:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
 
     steps:
       - name: Check out repository
@@ -38,6 +39,33 @@ jobs:
         with:
           name: token-usage-sync-${{ github.ref_name }}
           path: dist/token-usage-sync-${{ github.ref_name }}.tar.gz
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref_name, 'v') }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
