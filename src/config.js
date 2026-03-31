@@ -74,6 +74,19 @@ function getConfig() {
       cron: process.env.LLM_METADATA_SYNC_CRON || "0 3 * * *",
       timeoutMs: readInt("LLM_METADATA_SYNC_TIMEOUT_MS", 120000),
     },
+    quota: {
+      enabled: readBool("ZAI_QUOTA_SYNC_ENABLED", false),
+      url:
+        process.env.ZAI_QUOTA_SYNC_URL ||
+        "https://api.z.ai/api/monitor/usage/quota/limit",
+      cron: process.env.ZAI_QUOTA_SYNC_CRON || "*/10 * * * *",
+      timeoutMs: readInt("ZAI_QUOTA_SYNC_TIMEOUT_MS", 30000),
+      authToken:
+        process.env.ZAI_QUOTA_SYNC_AUTH_TOKEN ||
+        process.env.ANTHROPIC_AUTH_TOKEN ||
+        "",
+      acceptLanguage: process.env.ZAI_QUOTA_SYNC_ACCEPT_LANGUAGE || "en-US,en",
+    },
   };
 }
 

@@ -69,13 +69,16 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com
 先执行 [sql/schema.sql](/home/eeymoo/Codes/token-usage-sync/sql/schema.sql)。
 如果表已经存在，再执行 [sql/migrate_add_provider_usage_json.sql](/home/eeymoo/Codes/token-usage-sync/sql/migrate_add_provider_usage_json.sql) 补齐新列。
 如果需要补齐模型元数据表，再执行 [sql/migrate_add_llm_metadata_tables.sql](/home/eeymoo/Codes/token-usage-sync/sql/migrate_add_llm_metadata_tables.sql)。
+如果需要补齐 quota 监控表，再执行 [sql/migrate_add_quota_tables.sql](/home/eeymoo/Codes/token-usage-sync/sql/migrate_add_quota_tables.sql)。
 
 ## Logged Fields
 
-写入两张表：
+写入以下表：
 
 - `token_usage_requests_stats`
 - `token_usage_requests_records`
+- `token_usage_quota_limits`
+- `token_usage_quota_usage_details`
 
 公共字段：
 
@@ -111,3 +114,4 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com
 - `status` 格式为 `HTTP状态_usage来源`，例如 `200_reported`、`200_estimated`。
 - `usage_json` 会保留上游原始 usage 结构，方便查询 Anthropic 的 `cache_creation_input_tokens`、`cache_read_input_tokens` 等协议特有字段。
 - 服务启动后会先立即同步一次，之后再按 `LLM_METADATA_SYNC_CRON` 定时从 `LLM_METADATA_SYNC_URL` 拉取 vendors/models，并通过 QuestDB `/imp?overwrite=true` 全量覆盖 `token_usage_vendors`、`token_usage_models`；默认 cron 为每天 `03:00`。
+- 可选启用 z.ai 配额同步：`ZAI_QUOTA_SYNC_ENABLED=true` 后，服务会在启动时立即拉取一次 `ZAI_QUOTA_SYNC_URL`，并按 `ZAI_QUOTA_SYNC_CRON`（默认 `*/10 * * * *`）持续写入 `token_usage_quota_limits` 与 `token_usage_quota_usage_details`。鉴权 token 优先读 `ZAI_QUOTA_SYNC_AUTH_TOKEN`，未设置时回退到 `ANTHROPIC_AUTH_TOKEN`。

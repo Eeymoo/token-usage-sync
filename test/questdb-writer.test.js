@@ -37,6 +37,9 @@ function createSender() {
     intColumn(name, value) {
       this.calls.push(["int", name, value]);
     },
+    floatColumn(name, value) {
+      this.calls.push(["float", name, value]);
+    },
     booleanColumn(name, value) {
       this.calls.push(["bool", name, value]);
     },
@@ -185,4 +188,85 @@ test("QuestDbWriter close is idempotent and tolerates missing sender", async () 
 
   await writer.close();
   await writer.close();
+});
+
+test("QuestDbWriter writes quota snapshot rows", async () => {
+  const sender = createSender();
+  senderFactory = () => Promise.resolve(sender);
+  const writer = new QuestDbWriter({ enabled: true, configString: "http::addr=test" });
+
+  await writer.writeQuotaSnapshot({
+    syncId: "sync-1",
+    timestamp: 1710000000000,
+    source: "https://api.z.ai/api/monitor/usage/quota/limit",
+    status: "200_success",
+    level: "max",
+    limits: [
+      {
+        type: "TOKENS_LIMIT",
+        unit: 3,
+        number: 5,
+        percentage: 1,
+        nextResetAt: "2026-03-30T00:00:00.000Z",
+        usageJson: '{"type":"TOKENS_LIMIT"}',
+        usageDetails: [],
+      },
+      {
+        type: "TIME_LIMIT",
+        unit: 5,
+        number: 1,
+        usage: 4000,
+        currentValue: 4,
+        remaining: 3996,
+        percentage: 1,
+        nextResetAt: "2026-03-31T00:00:00.000Z",
+        usageJson: '{"type":"TIME_LIMIT"}',
+        usageDetails: [
+          { modelCode: "search-prime", usage: 1 },
+          { modelCode: "web-reader", usage: 3 },
+        ],
+      },
+    ],
+  });
+
+  await writer.close();
+
+  assert.equal(
+    sender.calls.some(
+      (call) => call[0] === "table" && call[1] === "token_usage_quota_limits",
+    ),
+    true,
+  );
+  assert.equal(
+    sender.calls.some(
+      (call) =>
+        call[0] === "table" && call[1] === "token_usage_quota_usage_details",
+    ),
+    true,
+  );
+  assert.equal(
+    sender.calls.some(
+      (call) => call[0] === "string" && call[1] === "sync_id" && call[2] === "sync-1",
+    ),
+    true,
+  );
+  assert.equal(
+    sender.calls.some(
+      (call) =>
+        call[0] === "string" && call[1] === "limit_type" && call[2] === "TIME_LIMIT",
+    ),
+    true,
+  );
+  assert.equal(
+    sender.calls.some(
+      (call) => call[0] === "string" && call[1] === "model_code" && call[2] === "search-prime",
+    ),
+    true,
+  );
+  assert.equal(
+    sender.calls.some(
+      (call) => call[0] === "float" && call[1] === "percentage" && call[2] === 1,
+    ),
+    true,
+  );
 });

@@ -13,6 +13,7 @@ const {
   parseRequestSnapshot,
 } = require("./parsers");
 const { MetadataSyncService } = require("./metadata-sync");
+const { QuotaSyncService } = require("./quota-sync");
 const { QuestDbWriter } = require("./questdb-writer");
 const { hashApiKey } = require("./api-key");
 const { freeEncoders } = require("./tokenizer");
@@ -214,6 +215,10 @@ function createApp() {
     questdb: config.questdb,
     metadata: config.metadata || { enabled: false },
   });
+  const quotaSync = new QuotaSyncService({
+    quota: config.quota || { enabled: false },
+    writer,
+  });
   const proxy = httpProxy.createProxyServer({
     changeOrigin: true,
     xfwd: true,
@@ -369,6 +374,7 @@ function createApp() {
     shutdownStarted = true;
     console.log(`Shutting down on ${signal}`);
     await metadataSync.stop();
+    await quotaSync.stop();
     await new Promise((resolve) => server.close(resolve));
     await writer.close();
     freeEncoders();
@@ -383,6 +389,7 @@ function createApp() {
 
   server.on("close", async () => {
     await metadataSync.stop();
+    await quotaSync.stop();
     await writer.close();
     freeEncoders();
   });
@@ -393,6 +400,7 @@ function createApp() {
         server.listen(config.port, resolve);
       });
       metadataSync.start();
+      quotaSync.start();
       console.log(`Proxy listening on :${config.port}`);
     },
     server,

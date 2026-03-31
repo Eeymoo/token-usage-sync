@@ -20,6 +20,22 @@ function addBool(sender, column, value) {
   }
 }
 
+function addFloat(sender, column, value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (typeof sender.floatColumn === "function") {
+      sender.floatColumn(column, value);
+      return;
+    }
+
+    if (Number.isInteger(value)) {
+      sender.intColumn(column, value);
+      return;
+    }
+
+    sender.stringColumn(column, String(value));
+  }
+}
+
 class QuestDbWriter {
   constructor(config) {
     this.enabled = Boolean(config && config.enabled !== false);
@@ -68,6 +84,33 @@ class QuestDbWriter {
     return this.pending;
   }
 
+  writeQuotaSnapshot(snapshot) {
+    if (!this.enabled) {
+      return Promise.resolve();
+    }
+
+    this.pending = this.pending
+      .then(async () => {
+        let sender = await this.getSender();
+        if (!sender) {
+          return;
+        }
+
+        try {
+          await this.writeQuotaRows(sender, snapshot);
+          await sender.flush();
+        } catch (error) {
+          sender.reset();
+          throw error;
+        }
+      })
+      .catch((error) => {
+        console.error("QuestDB quota write failed:", error);
+      });
+
+    return this.pending;
+  }
+
   async writeStatsRow(sender, record) {
     sender.table("token_usage_requests_stats");
     this.writeCommonColumns(sender, record);
@@ -103,6 +146,42 @@ class QuestDbWriter {
     addString(sender, "request_tag", record.requestTag);
     addString(sender, "api_key_hash", record.apiKeyHash);
     addString(sender, "usage_json", record.usageJson);
+  }
+
+  async writeQuotaRows(sender, snapshot) {
+    const limits = Array.isArray(snapshot.limits) ? snapshot.limits : [];
+    const timestamp = Number.isInteger(snapshot.timestamp)
+      ? snapshot.timestamp
+      : Date.now();
+
+    for (const limit of limits) {
+      sender.table("token_usage_quota_limits");
+      addString(sender, "sync_id", snapshot.syncId);
+      addString(sender, "source", snapshot.source);
+      addString(sender, "status", snapshot.status);
+      addString(sender, "level", snapshot.level);
+      addString(sender, "limit_type", limit.type);
+      addInt(sender, "unit", limit.unit);
+      addInt(sender, "limit_number", limit.number);
+      addInt(sender, "usage", limit.usage);
+      addInt(sender, "current_value", limit.currentValue);
+      addInt(sender, "remaining", limit.remaining);
+      addFloat(sender, "percentage", limit.percentage);
+      addString(sender, "next_reset_at", limit.nextResetAt);
+      addString(sender, "usage_json", limit.usageJson);
+      await sender.at(timestamp, "ms");
+
+      const details = Array.isArray(limit.usageDetails) ? limit.usageDetails : [];
+      for (const detail of details) {
+        sender.table("token_usage_quota_usage_details");
+        addString(sender, "sync_id", snapshot.syncId);
+        addString(sender, "source", snapshot.source);
+        addString(sender, "limit_type", limit.type);
+        addString(sender, "model_code", detail.modelCode);
+        addInt(sender, "usage", detail.usage);
+        await sender.at(timestamp, "ms");
+      }
+    }
   }
 
   async close() {

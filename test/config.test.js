@@ -28,6 +28,13 @@ function loadConfigWithEnv(env) {
     "LLM_METADATA_SYNC_URL",
     "LLM_METADATA_SYNC_CRON",
     "LLM_METADATA_SYNC_TIMEOUT_MS",
+    "ZAI_QUOTA_SYNC_ENABLED",
+    "ZAI_QUOTA_SYNC_URL",
+    "ZAI_QUOTA_SYNC_CRON",
+    "ZAI_QUOTA_SYNC_TIMEOUT_MS",
+    "ZAI_QUOTA_SYNC_AUTH_TOKEN",
+    "ZAI_QUOTA_SYNC_ACCEPT_LANGUAGE",
+    "ANTHROPIC_AUTH_TOKEN",
   ];
 
   for (const key of keys) {
@@ -77,6 +84,12 @@ test("getConfig returns defaults", () => {
   );
   assert.equal(config.metadata.cron, "0 3 * * *");
   assert.equal(config.metadata.timeoutMs, 120000);
+  assert.equal(config.quota.enabled, false);
+  assert.equal(config.quota.url, "https://api.z.ai/api/monitor/usage/quota/limit");
+  assert.equal(config.quota.cron, "*/10 * * * *");
+  assert.equal(config.quota.timeoutMs, 30000);
+  assert.equal(config.quota.authToken, "");
+  assert.equal(config.quota.acceptLanguage, "en-US,en");
 });
 
 test("getConfig respects explicit env vars and auth config fragments", () => {
@@ -100,6 +113,12 @@ test("getConfig respects explicit env vars and auth config fragments", () => {
     LLM_METADATA_SYNC_URL: "https://metadata.example/all.json",
     LLM_METADATA_SYNC_CRON: "15 4 * * *",
     LLM_METADATA_SYNC_TIMEOUT_MS: "45000",
+    ZAI_QUOTA_SYNC_ENABLED: "true",
+    ZAI_QUOTA_SYNC_URL: "https://quota.example/limit",
+    ZAI_QUOTA_SYNC_CRON: "5 * * * *",
+    ZAI_QUOTA_SYNC_TIMEOUT_MS: "20000",
+    ZAI_QUOTA_SYNC_AUTH_TOKEN: "quota-token",
+    ZAI_QUOTA_SYNC_ACCEPT_LANGUAGE: "zh-CN,zh",
   });
 
   assert.equal(config.port, 9999);
@@ -121,6 +140,12 @@ test("getConfig respects explicit env vars and auth config fragments", () => {
   assert.equal(config.metadata.url, "https://metadata.example/all.json");
   assert.equal(config.metadata.cron, "15 4 * * *");
   assert.equal(config.metadata.timeoutMs, 45000);
+  assert.equal(config.quota.enabled, true);
+  assert.equal(config.quota.url, "https://quota.example/limit");
+  assert.equal(config.quota.cron, "5 * * * *");
+  assert.equal(config.quota.timeoutMs, 20000);
+  assert.equal(config.quota.authToken, "quota-token");
+  assert.equal(config.quota.acceptLanguage, "zh-CN,zh");
 });
 
 test("getConfig uses QUESTDB_CONFIG and falls back on invalid integers", () => {
@@ -138,4 +163,13 @@ test("getConfig uses QUESTDB_CONFIG and falls back on invalid integers", () => {
   assert.equal(config.contentLimitChars, 20000);
   assert.equal(config.questdb.configString, "http::addr=custom:9000;token=abc");
   assert.equal(config.metadata.timeoutMs, 120000);
+  assert.equal(config.quota.cron, "*/10 * * * *");
+});
+
+test("getConfig falls back to ANTHROPIC_AUTH_TOKEN for quota auth token", () => {
+  const config = loadConfigWithEnv({
+    ANTHROPIC_AUTH_TOKEN: "anthropic-token",
+  });
+
+  assert.equal(config.quota.authToken, "anthropic-token");
 });
