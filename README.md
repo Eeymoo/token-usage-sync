@@ -68,6 +68,7 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com
 
 先执行 [sql/schema.sql](/home/eeymoo/Codes/token-usage-sync/sql/schema.sql)。
 如果表已经存在，再执行 [sql/migrate_add_provider_usage_json.sql](/home/eeymoo/Codes/token-usage-sync/sql/migrate_add_provider_usage_json.sql) 补齐新列。
+如果需要补齐模型元数据表，再执行 [sql/migrate_add_llm_metadata_tables.sql](/home/eeymoo/Codes/token-usage-sync/sql/migrate_add_llm_metadata_tables.sql)。
 
 ## Logged Fields
 
@@ -109,3 +110,4 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com
 - 如果上游未返回 usage，代理会使用 `@dqbd/tiktoken` 在本地估算输入输出 token，避免出现空值。
 - `status` 格式为 `HTTP状态_usage来源`，例如 `200_reported`、`200_estimated`。
 - `usage_json` 会保留上游原始 usage 结构，方便查询 Anthropic 的 `cache_creation_input_tokens`、`cache_read_input_tokens` 等协议特有字段。
+- 服务启动后会先立即同步一次，之后再按 `LLM_METADATA_SYNC_CRON` 定时从 `LLM_METADATA_SYNC_URL` 拉取 vendors/models，并通过 QuestDB `/imp?overwrite=true` 全量覆盖 `token_usage_vendors`、`token_usage_models`；默认 cron 为每天 `03:00`。

@@ -24,6 +24,10 @@ function loadConfigWithEnv(env) {
     "OPENAI_BASE_URL",
     "ANTHROPIC_BASE_URL",
     "GEMINI_BASE_URL",
+    "LLM_METADATA_SYNC_ENABLED",
+    "LLM_METADATA_SYNC_URL",
+    "LLM_METADATA_SYNC_CRON",
+    "LLM_METADATA_SYNC_TIMEOUT_MS",
   ];
 
   for (const key of keys) {
@@ -66,6 +70,13 @@ test("getConfig returns defaults", () => {
   assert.equal(config.upstreams.openai, "https://api.openai.com");
   assert.equal(config.upstreams.anthropic, "https://api.anthropic.com");
   assert.equal(config.upstreams.gemini, "https://generativelanguage.googleapis.com");
+  assert.equal(config.metadata.enabled, true);
+  assert.equal(
+    config.metadata.url,
+    "https://basellm.github.io/llm-metadata/api/all.json"
+  );
+  assert.equal(config.metadata.cron, "0 3 * * *");
+  assert.equal(config.metadata.timeoutMs, 120000);
 });
 
 test("getConfig respects explicit env vars and auth config fragments", () => {
@@ -85,6 +96,10 @@ test("getConfig respects explicit env vars and auth config fragments", () => {
     OPENAI_BASE_URL: "https://openai.example",
     ANTHROPIC_BASE_URL: "https://anthropic.example",
     GEMINI_BASE_URL: "https://gemini.example",
+    LLM_METADATA_SYNC_ENABLED: "false",
+    LLM_METADATA_SYNC_URL: "https://metadata.example/all.json",
+    LLM_METADATA_SYNC_CRON: "15 4 * * *",
+    LLM_METADATA_SYNC_TIMEOUT_MS: "45000",
   });
 
   assert.equal(config.port, 9999);
@@ -102,6 +117,10 @@ test("getConfig respects explicit env vars and auth config fragments", () => {
   assert.equal(config.upstreams.openai, "https://openai.example");
   assert.equal(config.upstreams.anthropic, "https://anthropic.example");
   assert.equal(config.upstreams.gemini, "https://gemini.example");
+  assert.equal(config.metadata.enabled, false);
+  assert.equal(config.metadata.url, "https://metadata.example/all.json");
+  assert.equal(config.metadata.cron, "15 4 * * *");
+  assert.equal(config.metadata.timeoutMs, 45000);
 });
 
 test("getConfig uses QUESTDB_CONFIG and falls back on invalid integers", () => {
@@ -118,4 +137,5 @@ test("getConfig uses QUESTDB_CONFIG and falls back on invalid integers", () => {
   assert.equal(config.responseCaptureLimitBytes, 2 * 1024 * 1024);
   assert.equal(config.contentLimitChars, 20000);
   assert.equal(config.questdb.configString, "http::addr=custom:9000;token=abc");
+  assert.equal(config.metadata.timeoutMs, 120000);
 });

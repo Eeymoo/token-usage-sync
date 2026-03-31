@@ -10,6 +10,21 @@ function readInt(name, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function readBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+
+  if (raw === "true") {
+    return true;
+  }
+  if (raw === "false") {
+    return false;
+  }
+  return fallback;
+}
+
 function appendQuestDbAuth(parts, name, key) {
   const value = process.env[name];
   if (value) {
@@ -50,6 +65,14 @@ function getConfig() {
       gemini:
         process.env.GEMINI_BASE_URL ||
         "https://generativelanguage.googleapis.com",
+    },
+    metadata: {
+      enabled: readBool("LLM_METADATA_SYNC_ENABLED", true),
+      url:
+        process.env.LLM_METADATA_SYNC_URL ||
+        "https://basellm.github.io/llm-metadata/api/all.json",
+      cron: process.env.LLM_METADATA_SYNC_CRON || "0 3 * * *",
+      timeoutMs: readInt("LLM_METADATA_SYNC_TIMEOUT_MS", 120000),
     },
   };
 }
