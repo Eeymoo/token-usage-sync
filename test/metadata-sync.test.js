@@ -80,6 +80,14 @@ test("buildCsvTables normalizes vendors and models into deterministic CSV output
     tables.models.rows[0].modalities_input,
     JSON.stringify(["text", "image"]),
   );
+  assert.equal(
+    tables.models.rows[0].last_updated,
+    "2025-02-10T00:00:00.000000Z",
+  );
+  assert.equal(
+    tables.models.rows[0].release_date,
+    "2025-02-01T00:00:00.000000Z",
+  );
   assert.match(
     tables.vendors.csv,
     /id,name,api,doc,iconURL,modelCount\nvendor_a,Vendor A,https:\/\/vendor-a\.example\/v1/
@@ -160,13 +168,15 @@ test("MetadataSyncService fetches metadata and overwrites both QuestDB tables", 
       assert.equal(requestUrl.searchParams.get("name"), "token_usage_models");
       assert.equal(schema[0].name, "attachment");
       assert.match(csv, /model-a/);
-      assert.match(csv, /2025-02-01/);
+      assert.match(csv, /2025-02-01T00:00:00.000000Z/);
     }
 
     return {
       ok: true,
       async text() {
-        return '{"status":"OK"}';
+        return requestUrl.searchParams.get("name") === "token_usage_vendors"
+          ? '{"status":"OK","rowsImported":2,"rowsRejected":0}'
+          : '{"status":"OK","rowsImported":2,"rowsRejected":0}';
       },
     };
   };
@@ -225,7 +235,7 @@ test("MetadataSyncService start runs one sync immediately and then schedules the
     return {
       ok: true,
       async text() {
-        return '{"status":"OK"}';
+        return '{"status":"OK","rowsImported":2,"rowsRejected":0}';
       },
     };
   };

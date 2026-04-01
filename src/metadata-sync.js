@@ -49,7 +49,7 @@ const MODELS_SCHEMA = [
   { name: "description", type: "STRING" },
   { name: "family", type: "STRING" },
   { name: "id", type: "STRING" },
-  { name: "last_updated", type: "TIMESTAMP", pattern: "yyyy-MM-dd" },
+  { name: "last_updated", type: "TIMESTAMP" },
   { name: "limit_context", type: "INT" },
   { name: "limit_output", type: "INT" },
   { name: "modalities_input", type: "STRING" },
@@ -57,7 +57,7 @@ const MODELS_SCHEMA = [
   { name: "name", type: "STRING" },
   { name: "open_weights", type: "BOOLEAN" },
   { name: "reasoning", type: "BOOLEAN" },
-  { name: "release_date", type: "TIMESTAMP", pattern: "yyyy-MM-dd" },
+  { name: "release_date", type: "TIMESTAMP" },
   { name: "temperature", type: "BOOLEAN" },
   { name: "tool_call", type: "BOOLEAN" },
 ];
@@ -96,6 +96,15 @@ function readDateOnly(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
+function formatQuestTimestamp(value) {
+  const date = readDateOnly(value);
+  if (!date) {
+    return null;
+  }
+
+  return `${date}T00:00:00.000000Z`;
+}
+
 function normalizeVendor(vendorId, vendor) {
   const models = vendor && typeof vendor.models === "object" ? vendor.models : {};
   return {
@@ -116,7 +125,7 @@ function normalizeModel(model) {
     description: readString(model && model.description),
     family: readString(model && model.family),
     id: readString(model && model.id),
-    last_updated: readDateOnly(model && model.last_updated),
+    last_updated: formatQuestTimestamp(model && model.last_updated),
     limit_context: readInt(model && model.limit && model.limit.context),
     limit_output: readInt(model && model.limit && model.limit.output),
     modalities_input: readStringList(
@@ -128,7 +137,7 @@ function normalizeModel(model) {
     name: readString(model && model.name),
     open_weights: readBool(model && model.open_weights),
     reasoning: readBool(model && model.reasoning),
-    release_date: readDateOnly(model && model.release_date),
+    release_date: formatQuestTimestamp(model && model.release_date),
     temperature: readBool(model && model.temperature),
     tool_call: readBool(model && model.tool_call),
   };
@@ -258,6 +267,7 @@ async function importCsvTable({
   tableName,
   csv,
   schema,
+  expectedRows,
   signal,
 }) {
   const url = new URL("/imp", connection.baseUrl);
@@ -266,6 +276,10 @@ async function importCsvTable({
   url.searchParams.set("forceHeader", "true");
   url.searchParams.set("fmt", "json");
   url.searchParams.set("atomicity", "abort");
+
+  console.log(
+    `[metadata-sync] submitting ${tableName}: rows=${expectedRows}, bytes=${Buffer.byteLength(csv)}`,
+  );
 
   const form = new FormData();
   form.set("schema", JSON.stringify(schema));
@@ -285,7 +299,58 @@ async function importCsvTable({
     );
   }
 
-  return responseText;
+  let responseBody = null;
+  try {
+    responseBody = JSON.parse(responseText);
+  } catch {
+    responseBody = null;
+  }
+
+  const status =
+    responseBody && typeof responseBody.status === "string"
+      ? responseBody.status
+      : null;
+  const rowsImported =
+    responseBody && Number.isFinite(responseBody.rowsImported)
+      ? responseBody.rowsImported
+      : null;
+  const rowsRejected =
+    responseBody && Number.isFinite(responseBody.rowsRejected)
+      ? responseBody.rowsRejected
+      : null;
+
+  console.log(
+    `[metadata-sync] QuestDB import ${tableName}: ${responseText}`,
+  );
+
+  if (status && status.toUpperCase() !== "OK") {
+    throw new Error(
+      `QuestDB import reported non-OK status for ${tableName}: ${responseText}`,
+    );
+  }
+
+  if (typeof rowsRejected === "number" && rowsRejected > 0) {
+    throw new Error(
+      `QuestDB import rejected ${rowsRejected} rows for ${tableName}: ${responseText}`,
+    );
+  }
+
+  if (
+    typeof expectedRows === "number" &&
+    typeof rowsImported === "number" &&
+    rowsImported !== expectedRows
+  ) {
+    throw new Error(
+      `QuestDB import row count mismatch for ${tableName}: expected ${expectedRows}, got ${rowsImported}; response=${responseText}`,
+    );
+  }
+
+  return {
+    status,
+    rowsImported,
+    rowsRejected,
+    raw: responseText,
+  };
 }
 
 function parseCronNumber(value, aliases) {
@@ -560,22 +625,27 @@ class MetadataSyncService {
 
       const payload = await response.json();
       const tables = buildCsvTables(payload);
+      console.log(
+        `[metadata-sync] data ready: vendors=${tables.vendors.rows.length}, models=${tables.models.rows.length}`,
+      );
 
-      await importCsvTable({
+      const vendorsImport = await importCsvTable({
         fetchImpl: this.fetchImpl,
         connection: this.connection,
         tableName: "token_usage_vendors",
         csv: tables.vendors.csv,
         schema: tables.vendors.schema,
+        expectedRows: tables.vendors.rows.length,
         signal: this.currentAbortController.signal,
       });
 
-      await importCsvTable({
+      const modelsImport = await importCsvTable({
         fetchImpl: this.fetchImpl,
         connection: this.connection,
         tableName: "token_usage_models",
         csv: tables.models.csv,
         schema: tables.models.schema,
+        expectedRows: tables.models.rows.length,
         signal: this.currentAbortController.signal,
       });
 
@@ -584,7 +654,7 @@ class MetadataSyncService {
         models: tables.models.rows.length,
       };
       console.log(
-        `[metadata-sync] imported ${result.vendors} vendors and ${result.models} models`,
+        `[metadata-sync] imported vendors=${result.vendors} (questdb=${vendorsImport.rowsImported ?? "unknown"}) models=${result.models} (questdb=${modelsImport.rowsImported ?? "unknown"})`,
       );
       return result;
     } finally {
