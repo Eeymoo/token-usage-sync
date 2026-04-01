@@ -63,6 +63,31 @@ const SAMPLE_PAYLOAD = {
   },
 };
 
+const MULTILINE_PAYLOAD = {
+  vendor_x: {
+    id: "vendor_x",
+    name: "Vendor X",
+    models: {
+      "model-x": {
+        attachment: false,
+        cost: { input: 0.1, output: 0.2 },
+        description: "line one\n\nline two",
+        family: "family-x",
+        id: "model-x",
+        last_updated: "2025-02-10",
+        limit: { context: 1024, output: 256 },
+        modalities: { input: ["text"], output: ["text"] },
+        name: "Model X",
+        open_weights: false,
+        reasoning: false,
+        release_date: "2025-02-01",
+        temperature: true,
+        tool_call: false,
+      },
+    },
+  },
+};
+
 test("buildCsvTables normalizes vendors and models into deterministic CSV output", () => {
   const tables = buildCsvTables(SAMPLE_PAYLOAD);
 
@@ -97,6 +122,14 @@ test("buildCsvTables normalizes vendors and models into deterministic CSV output
     /attachment,cost_input,cost_output,description,family,id,last_updated,limit_context/
   );
   assert.match(tables.models.csv, /""image""/);
+});
+
+test("buildCsvTables flattens multiline string fields so each model stays on one CSV row", () => {
+  const tables = buildCsvTables(MULTILINE_PAYLOAD);
+
+  assert.equal(tables.models.rows[0].description, "line one line two");
+  assert.equal(tables.models.csv.split(/\n/).length, 2);
+  assert.match(tables.models.csv, /line one line two/);
 });
 
 test("parseQuestDbConfig extracts base URL and auth settings", () => {

@@ -90,7 +90,12 @@ function readBool(value) {
 }
 
 function readString(value) {
-  return typeof value === "string" && value !== "" ? value : null;
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.replace(/\r?\n+/g, " ").trim();
+  return normalized !== "" ? normalized : null;
 }
 
 function readStringList(value) {
