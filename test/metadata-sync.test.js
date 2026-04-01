@@ -88,6 +88,31 @@ const MULTILINE_PAYLOAD = {
   },
 };
 
+const INVALID_DATE_PAYLOAD = {
+  vendor_y: {
+    id: "vendor_y",
+    name: "Vendor Y",
+    models: {
+      "model-y": {
+        attachment: false,
+        cost: { input: 0.1, output: 0.2 },
+        description: "invalid date test",
+        family: "family-y",
+        id: "model-y",
+        last_updated: "2025-25-11",
+        limit: { context: 1024, output: 256 },
+        modalities: { input: ["text"], output: ["text"] },
+        name: "Model Y",
+        open_weights: false,
+        reasoning: false,
+        release_date: "2025-02-31",
+        temperature: true,
+        tool_call: false,
+      },
+    },
+  },
+};
+
 test("buildCsvTables normalizes vendors and models into deterministic CSV output", () => {
   const tables = buildCsvTables(SAMPLE_PAYLOAD);
 
@@ -130,6 +155,17 @@ test("buildCsvTables flattens multiline string fields so each model stays on one
   assert.equal(tables.models.rows[0].description, "line one line two");
   assert.equal(tables.models.csv.split(/\n/).length, 2);
   assert.match(tables.models.csv, /line one line two/);
+});
+
+test("buildCsvTables drops invalid calendar dates instead of emitting broken timestamps", () => {
+  const tables = buildCsvTables(INVALID_DATE_PAYLOAD);
+
+  assert.equal(tables.models.rows[0].last_updated, null);
+  assert.equal(tables.models.rows[0].release_date, null);
+  assert.match(
+    tables.models.csv,
+    /false,0.1,0.2,invalid date test,family-y,model-y,,1024,256/
+  );
 });
 
 test("parseQuestDbConfig extracts base URL and auth settings", () => {
