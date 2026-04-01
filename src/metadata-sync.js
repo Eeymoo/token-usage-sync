@@ -49,7 +49,11 @@ const MODELS_SCHEMA = [
   { name: "description", type: "STRING" },
   { name: "family", type: "STRING" },
   { name: "id", type: "STRING" },
-  { name: "last_updated", type: "TIMESTAMP" },
+  {
+    name: "last_updated",
+    type: "TIMESTAMP",
+    pattern: "yyyy-MM-ddTHH:mm:ss.SSSUUUZ",
+  },
   { name: "limit_context", type: "INT" },
   { name: "limit_output", type: "INT" },
   { name: "modalities_input", type: "STRING" },
@@ -57,7 +61,11 @@ const MODELS_SCHEMA = [
   { name: "name", type: "STRING" },
   { name: "open_weights", type: "BOOLEAN" },
   { name: "reasoning", type: "BOOLEAN" },
-  { name: "release_date", type: "TIMESTAMP" },
+  {
+    name: "release_date",
+    type: "TIMESTAMP",
+    pattern: "yyyy-MM-ddTHH:mm:ss.SSSUUUZ",
+  },
   { name: "temperature", type: "BOOLEAN" },
   { name: "tool_call", type: "BOOLEAN" },
 ];
