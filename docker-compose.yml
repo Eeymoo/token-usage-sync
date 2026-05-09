@@ -3,6 +3,9 @@ services:
     image: nginx:1.27-alpine
     container_name: token-usage-sync-gateway
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       token-usage-sync:
         condition: service_healthy
@@ -10,6 +13,8 @@ services:
       - "${PORT:-12475}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    extra_hosts:
+      - "new-api.onemue.cn:10.10.1.4"
     healthcheck:
       test:
         - CMD-SHELL
@@ -25,6 +30,9 @@ services:
     image: token-usage-sync:latest
     container_name: token-usage-sync
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     expose:
       - "8787"
     environment:
@@ -42,6 +50,7 @@ services:
       CONTENT_LIMIT_CHARS: "${CONTENT_LIMIT_CHARS:-20000}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "new-api.onemue.cn:10.10.1.4"
     healthcheck:
       test:
         - CMD
