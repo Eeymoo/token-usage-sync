@@ -1,5 +1,7 @@
 "use strict";
 
+const path = require("node:path");
+
 function readInt(name, fallback) {
   const raw = process.env[name];
   if (!raw) {
@@ -86,6 +88,16 @@ function getConfig() {
         process.env.ANTHROPIC_AUTH_TOKEN ||
         "",
       acceptLanguage: process.env.ZAI_QUOTA_SYNC_ACCEPT_LANGUAGE || "en-US,en",
+    },
+    admin: {
+      webToken: process.env.ADMIN_WEB_TOKEN || "",
+      sessionSecret: process.env.ADMIN_SESSION_SECRET || "token-usage-sync-admin-session",
+      sessionMaxAgeSeconds: readInt("ADMIN_SESSION_MAX_AGE_SECONDS", 24 * 60 * 60),
+    },
+    modelMapping: {
+      filePath:
+        process.env.MODEL_MAPPING_FILE ||
+        path.join(process.cwd(), "data", "model-mappings.json"),
     },
   };
 }

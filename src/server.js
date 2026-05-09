@@ -1,7 +1,8 @@
 "use strict";
 
 const http = require("node:http");
-const { randomUUID } = require("node:crypto");
+const { createHmac, randomUUID, timingSafeEqual } = require("node:crypto");
+const { Readable } = require("node:stream");
 const httpProxy = require("http-proxy");
 
 const { getConfig } = require("./config");
@@ -16,9 +17,349 @@ const { MetadataSyncService } = require("./metadata-sync");
 const { QuotaSyncService } = require("./quota-sync");
 const { QuestDbWriter } = require("./questdb-writer");
 const { hashApiKey } = require("./api-key");
+const { ModelMappingStore } = require("./model-mapping-store");
 const { freeEncoders } = require("./tokenizer");
 
 const REQUEST_CONTEXT = Symbol("request-context");
+const ADMIN_SESSION_COOKIE = "admin_session";
+
+function sendHtml(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(html),
+  });
+  res.end(html);
+}
+
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) {
+    return cookies;
+  }
+
+  for (const part of String(cookieHeader).split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const index = trimmed.indexOf("=");
+    if (index <= 0) {
+      continue;
+    }
+    const key = trimmed.slice(0, index).trim();
+    const value = trimmed.slice(index + 1).trim();
+    if (!key) {
+      continue;
+    }
+    cookies[key] = value;
+  }
+
+  return cookies;
+}
+
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let total = 0;
+    const chunks = [];
+
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error(`Body too large (>${maxBytes} bytes)`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+
+    req.on("error", reject);
+  });
+}
+
+function safeEqualString(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function signAdminSession(payload, sessionSecret) {
+  return createHmac("sha256", sessionSecret).update(payload).digest("hex");
+}
+
+function createAdminSessionCookie(config) {
+  const expiresAt =
+    Math.floor(Date.now() / 1000) + Math.max(1, config.admin.sessionMaxAgeSeconds);
+  const tokenHashPrefix = hashApiKey(config.admin.webToken).slice(0, 16);
+  const payload = `${expiresAt}.${tokenHashPrefix}`;
+  const signature = signAdminSession(payload, config.admin.sessionSecret);
+  return `${payload}.${signature}`;
+}
+
+function isAdminAuthenticated(req, config) {
+  if (!config.admin.webToken) {
+    return false;
+  }
+
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionValue = cookies[ADMIN_SESSION_COOKIE];
+  if (!sessionValue) {
+    return false;
+  }
+
+  const parts = sessionValue.split(".");
+  if (parts.length !== 3) {
+    return false;
+  }
+
+  const [expiresAtRaw, tokenHashPrefix, signature] = parts;
+  const payload = `${expiresAtRaw}.${tokenHashPrefix}`;
+  const expected = signAdminSession(payload, config.admin.sessionSecret);
+  if (!safeEqualString(signature, expected)) {
+    return false;
+  }
+
+  const expiresAt = Number.parseInt(expiresAtRaw, 10);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) {
+    return false;
+  }
+
+  const expectedTokenHashPrefix = hashApiKey(config.admin.webToken).slice(0, 16);
+  return safeEqualString(tokenHashPrefix, expectedTokenHashPrefix);
+}
+
+function buildSessionCookieHeader(config, value, maxAgeSeconds) {
+  return [
+    `${ADMIN_SESSION_COOKIE}=${value}`,
+    "Path=/admin",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAgeSeconds}`,
+  ].join("; ");
+}
+
+function renderLoginPage() {
+  return [
+    "<!doctype html>",
+    "<html lang=\"zh-CN\">",
+    "<head>",
+    "  <meta charset=\"utf-8\" />",
+    "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+    "  <title>Token 登录</title>",
+    "  <style>",
+    "    :root { --bg: #f3efe6; --card: #fff8ed; --text: #1f1b16; --accent: #c45b1e; --muted: #7b6f64; }",
+    "    * { box-sizing: border-box; }",
+    "    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: 'Avenir Next', 'Noto Sans SC', sans-serif; background: radial-gradient(circle at 20% 20%, #ffe6c9 0%, #f3efe6 45%, #e8e2d8 100%); color: var(--text); }",
+    "    .card { width: min(460px, 92vw); background: var(--card); border: 1px solid #ead7c1; border-radius: 20px; padding: 28px; box-shadow: 0 18px 40px rgba(65, 38, 17, 0.12); }",
+    "    h1 { margin: 0 0 10px; font-size: 28px; letter-spacing: 0.02em; }",
+    "    p { margin: 0 0 18px; color: var(--muted); }",
+    "    label { display: block; margin-bottom: 8px; font-weight: 600; }",
+    "    input { width: 100%; border: 1px solid #d9c5ad; border-radius: 12px; padding: 12px 14px; font-size: 16px; background: #fffcf6; }",
+    "    button { margin-top: 14px; width: 100%; border: 0; border-radius: 12px; padding: 12px 14px; background: linear-gradient(120deg, #c45b1e, #d97b29); color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; }",
+    "    .tip { margin-top: 12px; min-height: 22px; color: #8a2d12; }",
+    "  </style>",
+    "</head>",
+    "<body>",
+    "  <main class=\"card\">",
+    "    <h1>Token 登录</h1>",
+    "    <p>输入管理 Token 进入模型映射配置页面。</p>",
+    "    <form id=\"login-form\">",
+    "      <label for=\"token\">管理 Token</label>",
+    "      <input id=\"token\" name=\"token\" type=\"password\" autocomplete=\"current-password\" required />",
+    "      <button type=\"submit\">登录</button>",
+    "      <div class=\"tip\" id=\"tip\"></div>",
+    "    </form>",
+    "  </main>",
+    "  <script>",
+    "    const form = document.getElementById('login-form');",
+    "    const tip = document.getElementById('tip');",
+    "    form.addEventListener('submit', async (event) => {",
+    "      event.preventDefault();",
+    "      tip.textContent = '登录中...';",
+    "      const token = document.getElementById('token').value;",
+    "      const response = await fetch('/admin/api/login', {",
+    "        method: 'POST',",
+    "        headers: { 'content-type': 'application/json' },",
+    "        body: JSON.stringify({ token }),",
+    "      });",
+    "      if (response.ok) {",
+    "        location.href = '/admin/mappings';",
+    "        return;",
+    "      }",
+    "      const payload = await response.json().catch(() => ({}));",
+    "      tip.textContent = payload.message || '登录失败，请检查 Token';",
+    "    });",
+    "  </script>",
+    "</body>",
+    "</html>",
+  ].join("\n");
+}
+
+function renderMappingPage() {
+  return [
+    "<!doctype html>",
+    "<html lang=\"zh-CN\">",
+    "<head>",
+    "  <meta charset=\"utf-8\" />",
+    "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+    "  <title>模型映射配置</title>",
+    "  <style>",
+    "    :root { --bg1: #f5f7dc; --bg2: #dbe8cf; --card: #fefef8; --line: #d1dcc0; --text: #232c1e; --accent: #296a37; --danger: #9f2e2e; --muted: #5f6b57; }",
+    "    * { box-sizing: border-box; }",
+    "    body { margin: 0; min-height: 100vh; font-family: 'DIN Alternate', 'Noto Sans SC', sans-serif; color: var(--text); background: linear-gradient(145deg, var(--bg1), var(--bg2)); padding: 24px; }",
+    "    .wrap { max-width: 960px; margin: 0 auto; background: var(--card); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; box-shadow: 0 24px 50px rgba(35, 44, 30, 0.12); }",
+    "    .head { padding: 20px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); }",
+    "    .head h1 { margin: 0; font-size: 24px; }",
+    "    .head p { margin: 4px 0 0; color: var(--muted); font-family: 'Avenir Next', 'Noto Sans SC', sans-serif; }",
+    "    .actions button { border: 0; border-radius: 10px; padding: 9px 14px; font-weight: 700; cursor: pointer; }",
+    "    #save { background: var(--accent); color: #fff; }",
+    "    #logout { background: #e7eee0; color: #293124; margin-left: 8px; }",
+    "    table { width: 100%; border-collapse: collapse; }",
+    "    th, td { border-bottom: 1px solid var(--line); padding: 12px 14px; text-align: left; }",
+    "    th { background: #f3f8eb; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #516149; }",
+    "    input { width: 100%; padding: 10px 12px; border: 1px solid #c8d4ba; border-radius: 10px; font-size: 14px; }",
+    "    .remove { background: #fceaea; color: var(--danger); border: 0; border-radius: 8px; padding: 8px 10px; cursor: pointer; }",
+    "    .foot { padding: 14px; display: flex; justify-content: space-between; align-items: center; }",
+    "    #add { border: 1px dashed #84a378; background: #eef6e9; color: #1d5327; border-radius: 10px; padding: 8px 12px; cursor: pointer; }",
+    "    #tip { color: var(--muted); min-height: 20px; }",
+    "    @media (max-width: 680px) { .head { display: block; } .actions { margin-top: 10px; } }",
+    "  </style>",
+    "</head>",
+    "<body>",
+    "  <section class=\"wrap\">",
+    "    <header class=\"head\">",
+    "      <div>",
+    "        <h1>模型映射配置</h1>",
+    "        <p>例如：将调用侧的别名映射到真实模型名。</p>",
+    "      </div>",
+    "      <div class=\"actions\">",
+    "        <button id=\"save\">保存映射</button>",
+    "        <button id=\"logout\">退出</button>",
+    "      </div>",
+    "    </header>",
+    "    <table>",
+    "      <thead>",
+    "        <tr><th>别名（调用侧）</th><th>目标模型（上游）</th><th>操作</th></tr>",
+    "      </thead>",
+    "      <tbody id=\"rows\"></tbody>",
+    "    </table>",
+    "    <div class=\"foot\">",
+    "      <button id=\"add\">新增一行</button>",
+    "      <div id=\"tip\"></div>",
+    "    </div>",
+    "  </section>",
+    "  <script>",
+    "    const rows = document.getElementById('rows');",
+    "    const tip = document.getElementById('tip');",
+    "    const add = document.getElementById('add');",
+    "    const save = document.getElementById('save');",
+    "    const logout = document.getElementById('logout');",
+    "",
+    "    function row(alias = '', target = '') {",
+    "      const tr = document.createElement('tr');",
+    "      tr.innerHTML = '<td><input class=\"alias\" value=\"' + alias.replace(/\"/g, '&quot;') + '\" /></td>' +",
+    "        '<td><input class=\"target\" value=\"' + target.replace(/\"/g, '&quot;') + '\" /></td>' +",
+    "        '<td><button class=\"remove\" type=\"button\">删除</button></td>';",
+    "      tr.querySelector('.remove').addEventListener('click', () => tr.remove());",
+    "      rows.appendChild(tr);",
+    "    }",
+    "",
+    "    async function load() {",
+    "      const response = await fetch('/admin/api/mappings');",
+    "      if (response.status === 401) { location.href = '/admin/login'; return; }",
+    "      const payload = await response.json();",
+    "      rows.innerHTML = '';",
+    "      (payload.mappings || []).forEach((item) => row(item.alias || '', item.target || ''));",
+    "      if (!rows.children.length) { row(); }",
+    "      tip.textContent = payload.updatedAt ? ('上次更新：' + payload.updatedAt) : '暂无映射，先新增一条';",
+    "    }",
+    "",
+    "    function collectMappings() {",
+    "      return Array.from(rows.querySelectorAll('tr')).map((tr) => ({",
+    "        alias: tr.querySelector('.alias').value.trim(),",
+    "        target: tr.querySelector('.target').value.trim(),",
+    "      })).filter((item) => item.alias && item.target);",
+    "    }",
+    "",
+    "    add.addEventListener('click', () => row());",
+    "    save.addEventListener('click', async () => {",
+    "      tip.textContent = '保存中...';",
+    "      const response = await fetch('/admin/api/mappings', {",
+    "        method: 'PUT',",
+    "        headers: { 'content-type': 'application/json' },",
+    "        body: JSON.stringify({ mappings: collectMappings() }),",
+    "      });",
+    "      const payload = await response.json().catch(() => ({}));",
+    "      if (!response.ok) { tip.textContent = payload.message || '保存失败'; return; }",
+    "      tip.textContent = '保存成功，更新时间：' + payload.updatedAt;",
+    "      load();",
+    "    });",
+    "",
+    "    logout.addEventListener('click', async () => {",
+    "      await fetch('/admin/api/logout', { method: 'POST' });",
+    "      location.href = '/admin/login';",
+    "    });",
+    "",
+    "    load();",
+    "  </script>",
+    "</body>",
+    "</html>",
+  ].join("\n");
+}
+
+function rewriteRequestModel(rawBody, provider, mappingStore) {
+  if (!rawBody || (provider !== "openai" && provider !== "anthropic")) {
+    return { rawBody, mappedFrom: null, mappedTo: null };
+  }
+
+  try {
+    const payload = JSON.parse(rawBody);
+    if (!payload || typeof payload !== "object" || typeof payload.model !== "string") {
+      return { rawBody, mappedFrom: null, mappedTo: null };
+    }
+
+    const aliasModel = payload.model;
+    const mappedModel = mappingStore.getTargetModel(aliasModel);
+    if (!mappedModel) {
+      return { rawBody, mappedFrom: null, mappedTo: null };
+    }
+
+    payload.model = mappedModel;
+    return {
+      rawBody: JSON.stringify(payload),
+      mappedFrom: aliasModel,
+      mappedTo: mappedModel,
+    };
+  } catch {
+    return { rawBody, mappedFrom: null, mappedTo: null };
+  }
+}
+
+function rewriteGeminiPath(urlPath, mappingStore) {
+  const modelPathPattern = /^(\/v1(?:beta)?\/models\/)([^/:]+)(:generateContent|:streamGenerateContent)$/;
+  const match = urlPath.match(modelPathPattern);
+  if (!match) {
+    return { path: urlPath, mappedFrom: null, mappedTo: null };
+  }
+
+  const [, prefix, encodedModel, suffix] = match;
+  const modelAlias = decodeURIComponent(encodedModel);
+  const mappedModel = mappingStore.getTargetModel(modelAlias);
+  if (!mappedModel) {
+    return { path: urlPath, mappedFrom: null, mappedTo: null };
+  }
+
+  return {
+    path: `${prefix}${encodeURIComponent(mappedModel)}${suffix}`,
+    mappedFrom: modelAlias,
+    mappedTo: mappedModel,
+  };
+}
 
 function extractApiKey(req) {
   const authorization = getHeader(req.headers, "authorization");
@@ -211,6 +552,7 @@ function finalizeRequest(context, overrides) {
 function createApp() {
   const config = getConfig();
   const writer = new QuestDbWriter(config.questdb);
+  const mappingStore = new ModelMappingStore(config.modelMapping.filePath);
   const metadataSync = new MetadataSyncService({
     questdb: config.questdb,
     metadata: config.metadata || { enabled: false },
@@ -238,6 +580,10 @@ function createApp() {
 
     if (context.userId && !proxyReq.headersSent) {
       proxyReq.setHeader("x-user-id", context.userId);
+    }
+
+    if (context.forwardBodyBuffer && !proxyReq.headersSent) {
+      proxyReq.setHeader("content-length", context.forwardBodyBuffer.length);
     }
   });
 
@@ -298,7 +644,7 @@ function createApp() {
     }
   });
 
-  const server = http.createServer((req, res) => {
+  async function handleRequest(req, res) {
     if (!req.url) {
       sendJson(res, 400, { error: "invalid_request", message: "Missing URL" });
       return;
@@ -323,6 +669,125 @@ function createApp() {
       return;
     }
 
+    if (requestUrl.pathname === "/admin/login" && req.method === "GET") {
+      sendHtml(res, 200, renderLoginPage());
+      return;
+    }
+
+    if (requestUrl.pathname === "/admin/api/login" && req.method === "POST") {
+      if (!config.admin.webToken) {
+        sendJson(res, 503, {
+          error: "admin_disabled",
+          message: "ADMIN_WEB_TOKEN is not configured",
+        });
+        return;
+      }
+
+      let body;
+      try {
+        body = JSON.parse(await readRawBody(req, 64 * 1024));
+      } catch {
+        sendJson(res, 400, {
+          error: "invalid_request",
+          message: "Invalid JSON body",
+        });
+        return;
+      }
+
+      if (!body || typeof body.token !== "string") {
+        sendJson(res, 400, {
+          error: "invalid_request",
+          message: "Missing token",
+        });
+        return;
+      }
+
+      if (!safeEqualString(body.token, config.admin.webToken)) {
+        sendJson(res, 401, {
+          error: "unauthorized",
+          message: "Token invalid",
+        });
+        return;
+      }
+
+      const sessionValue = createAdminSessionCookie(config);
+      res.setHeader(
+        "set-cookie",
+        buildSessionCookieHeader(
+          config,
+          sessionValue,
+          Math.max(1, config.admin.sessionMaxAgeSeconds),
+        ),
+      );
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (requestUrl.pathname === "/admin/api/logout" && req.method === "POST") {
+      res.setHeader("set-cookie", buildSessionCookieHeader(config, "", 0));
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (requestUrl.pathname === "/admin/mappings" && req.method === "GET") {
+      if (!isAdminAuthenticated(req, config)) {
+        res.writeHead(302, { location: "/admin/login" });
+        res.end();
+        return;
+      }
+
+      sendHtml(res, 200, renderMappingPage());
+      return;
+    }
+
+    if (requestUrl.pathname === "/admin/api/mappings") {
+      if (!isAdminAuthenticated(req, config)) {
+        sendJson(res, 401, {
+          error: "unauthorized",
+          message: "Login required",
+        });
+        return;
+      }
+
+      await mappingStore.ensureLoaded();
+
+      if (req.method === "GET") {
+        sendJson(res, 200, mappingStore.getState());
+        return;
+      }
+
+      if (req.method === "PUT") {
+        let body;
+        try {
+          body = JSON.parse(await readRawBody(req, 256 * 1024));
+        } catch {
+          sendJson(res, 400, {
+            error: "invalid_request",
+            message: "Invalid JSON body",
+          });
+          return;
+        }
+
+        if (!body || !Array.isArray(body.mappings)) {
+          sendJson(res, 400, {
+            error: "invalid_request",
+            message: "mappings must be an array",
+          });
+          return;
+        }
+
+        const saved = await mappingStore.saveMappings(body.mappings);
+        sendJson(res, 200, saved);
+        return;
+      }
+
+      sendJson(res, 405, {
+        error: "method_not_allowed",
+        message: "Use GET or PUT",
+      });
+      return;
+    }
+
     const route = resolveRoute(config, requestUrl.pathname);
     if (!route) {
       sendJson(res, 404, {
@@ -333,16 +798,23 @@ function createApp() {
       return;
     }
 
+    await mappingStore.ensureLoaded();
+
+    const baseUpstreamPath = stripPrefix(requestUrl.pathname, route.prefix);
+    const geminiPathRewrite =
+      route.provider === "gemini"
+        ? rewriteGeminiPath(baseUpstreamPath, mappingStore)
+        : { path: baseUpstreamPath, mappedFrom: null, mappedTo: null };
+
     const context = {
       requestId: randomUUID(),
       provider: route.provider,
       writer,
       startedAt: Date.now(),
-      upstreamPath:
-        stripPrefix(requestUrl.pathname, route.prefix) + requestUrl.search,
+      upstreamPath: geminiPathRewrite.path + requestUrl.search,
       apiKind: detectApiKind(
         route.provider,
-        stripPrefix(requestUrl.pathname, route.prefix) + requestUrl.search,
+        geminiPathRewrite.path + requestUrl.search,
       ),
       category: null,
       isStream: false,
@@ -351,6 +823,8 @@ function createApp() {
       inputContent: "",
       inputChars: 0,
       apiKeyHash: null,
+      modelMappedFrom: geminiPathRewrite.mappedFrom,
+      modelMappedTo: geminiPathRewrite.mappedTo,
     };
 
     const apiKey = extractApiKey(req);
@@ -363,7 +837,52 @@ function createApp() {
 
     req.url = context.upstreamPath;
 
+    const isJsonBodyRequest =
+      req.method !== "GET" &&
+      req.method !== "HEAD" &&
+      String(getHeader(req.headers, "content-type") || "")
+        .toLowerCase()
+        .includes("application/json");
+
+    if (isJsonBodyRequest && (route.provider === "openai" || route.provider === "anthropic")) {
+      let rawBody;
+      try {
+        rawBody = await readRawBody(req, config.requestCaptureLimitBytes);
+      } catch (error) {
+        sendJson(res, 413, {
+          error: "request_too_large",
+          message: error.message,
+        });
+        return;
+      }
+
+      const rewriteResult = rewriteRequestModel(rawBody, route.provider, mappingStore);
+      if (rewriteResult.mappedFrom && rewriteResult.mappedTo) {
+        context.modelMappedFrom = rewriteResult.mappedFrom;
+        context.modelMappedTo = rewriteResult.mappedTo;
+      }
+
+      context.forwardBodyBuffer = Buffer.from(rewriteResult.rawBody, "utf8");
+
+      proxy.web(req, res, {
+        target: route.target,
+        buffer: Readable.from([context.forwardBodyBuffer]),
+      });
+      return;
+    }
+
     proxy.web(req, res, { target: route.target });
+  }
+
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((error) => {
+      if (!res.headersSent) {
+        sendJson(res, 500, {
+          error: "internal_error",
+          message: error.message,
+        });
+      }
+    });
   });
 
   let shutdownStarted = false;
@@ -396,6 +915,7 @@ function createApp() {
 
   return {
     async start() {
+      await mappingStore.ensureLoaded();
       await new Promise((resolve) => {
         server.listen(config.port, resolve);
       });

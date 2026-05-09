@@ -35,6 +35,10 @@ function loadConfigWithEnv(env) {
     "ZAI_QUOTA_SYNC_AUTH_TOKEN",
     "ZAI_QUOTA_SYNC_ACCEPT_LANGUAGE",
     "ANTHROPIC_AUTH_TOKEN",
+    "ADMIN_WEB_TOKEN",
+    "ADMIN_SESSION_SECRET",
+    "ADMIN_SESSION_MAX_AGE_SECONDS",
+    "MODEL_MAPPING_FILE",
   ];
 
   for (const key of keys) {
@@ -90,6 +94,10 @@ test("getConfig returns defaults", () => {
   assert.equal(config.quota.timeoutMs, 30000);
   assert.equal(config.quota.authToken, "");
   assert.equal(config.quota.acceptLanguage, "en-US,en");
+  assert.equal(config.admin.webToken, "");
+  assert.equal(config.admin.sessionSecret, "token-usage-sync-admin-session");
+  assert.equal(config.admin.sessionMaxAgeSeconds, 24 * 60 * 60);
+  assert.match(config.modelMapping.filePath, /data\/model-mappings\.json$/);
 });
 
 test("getConfig respects explicit env vars and auth config fragments", () => {
@@ -119,6 +127,10 @@ test("getConfig respects explicit env vars and auth config fragments", () => {
     ZAI_QUOTA_SYNC_TIMEOUT_MS: "20000",
     ZAI_QUOTA_SYNC_AUTH_TOKEN: "quota-token",
     ZAI_QUOTA_SYNC_ACCEPT_LANGUAGE: "zh-CN,zh",
+    ADMIN_WEB_TOKEN: "admin-token-1",
+    ADMIN_SESSION_SECRET: "admin-secret-1",
+    ADMIN_SESSION_MAX_AGE_SECONDS: "3600",
+    MODEL_MAPPING_FILE: "/tmp/model-mappings-test.json",
   });
 
   assert.equal(config.port, 9999);
@@ -146,6 +158,10 @@ test("getConfig respects explicit env vars and auth config fragments", () => {
   assert.equal(config.quota.timeoutMs, 20000);
   assert.equal(config.quota.authToken, "quota-token");
   assert.equal(config.quota.acceptLanguage, "zh-CN,zh");
+  assert.equal(config.admin.webToken, "admin-token-1");
+  assert.equal(config.admin.sessionSecret, "admin-secret-1");
+  assert.equal(config.admin.sessionMaxAgeSeconds, 3600);
+  assert.equal(config.modelMapping.filePath, "/tmp/model-mappings-test.json");
 });
 
 test("getConfig uses QUESTDB_CONFIG and falls back on invalid integers", () => {

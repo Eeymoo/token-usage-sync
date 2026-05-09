@@ -64,6 +64,32 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com
 - `POST /gemini/v1beta/models/{model}:generateContent`
 - `POST /gemini/v1beta/models/{model}:streamGenerateContent?alt=sse`
 
+## Admin Web
+
+新增两个管理页面：
+
+- `GET /admin/login`：Token 登录页
+- `GET /admin/mappings`：模型映射配置页（需先登录）
+
+对应管理接口：
+
+- `POST /admin/api/login`：提交 `{ "token": "..." }` 登录
+- `POST /admin/api/logout`：退出登录
+- `GET /admin/api/mappings`：读取映射
+- `PUT /admin/api/mappings`：保存映射，提交 `{ "mappings": [{ "alias": "...", "target": "..." }] }`
+
+配置项：
+
+- `ADMIN_WEB_TOKEN`：管理页面登录 Token（不配置则登录接口返回 503）
+- `ADMIN_SESSION_SECRET`：管理会话签名密钥
+- `ADMIN_SESSION_MAX_AGE_SECONDS`：会话有效期，默认 86400 秒
+- `MODEL_MAPPING_FILE`：映射持久化文件路径，默认 `./data/model-mappings.json`
+
+映射生效规则：
+
+- OpenAI 与 Anthropic 的 JSON 请求体中 `model` 字段会按映射替换后再转发。
+- Gemini 请求路径中的模型名（`/v1beta/models/{model}:...`）也支持按映射替换。
+
 ## QuestDB Schema
 
 先执行 [sql/schema.sql](/home/eeymoo/Codes/token-usage-sync/sql/schema.sql)。

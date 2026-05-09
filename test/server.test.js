@@ -4,10 +4,50 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const Module = require("node:module");
+const path = require("node:path");
+const os = require("node:os");
+const fs = require("node:fs/promises");
+const { randomUUID } = require("node:crypto");
 
 const originalLoad = Module._load;
 const writes = [];
 const freeEncodersCalls = [];
+
+function createMockConfig(overrides = {}) {
+  const mappingFilePath =
+    overrides.modelMappingFilePath ||
+    path.join(os.tmpdir(), `token-usage-sync-mappings-${randomUUID()}.json`);
+
+  return {
+    port: 0,
+    requestCaptureLimitBytes: 1024 * 1024,
+    responseCaptureLimitBytes: 1024 * 1024,
+    contentLimitChars: 2000,
+    questdb: {
+      enabled: true,
+      configString: "http::addr=test",
+    },
+    routes: {
+      openaiPrefix: "/openai",
+      anthropicPrefix: "/anthropic",
+      geminiPrefix: "/gemini",
+    },
+    upstreams: {
+      openai: "http://127.0.0.1:1",
+      anthropic: "http://127.0.0.1:1",
+      gemini: "http://127.0.0.1:1",
+    },
+    admin: {
+      webToken: "test-admin-token",
+      sessionSecret: "test-admin-secret",
+      sessionMaxAgeSeconds: 3600,
+    },
+    modelMapping: {
+      filePath: mappingFilePath,
+    },
+    ...overrides,
+  };
+}
 
 class FakeQuestDbWriter {
   constructor(config) {
@@ -28,26 +68,7 @@ Module._load = function mockServerDeps(request, parent, isMain) {
   if (request === "./config" || request.endsWith("/src/config")) {
     return {
       getConfig() {
-        return {
-          port: 0,
-          requestCaptureLimitBytes: 1024 * 1024,
-          responseCaptureLimitBytes: 1024 * 1024,
-          contentLimitChars: 2000,
-          questdb: {
-            enabled: true,
-            configString: "http::addr=test",
-          },
-          routes: {
-            openaiPrefix: "/openai",
-            anthropicPrefix: "/anthropic",
-            geminiPrefix: "/gemini",
-          },
-          upstreams: {
-            openai: "http://127.0.0.1:1",
-            anthropic: "http://127.0.0.1:1",
-            gemini: "http://127.0.0.1:1",
-          },
-        };
+        return createMockConfig();
       },
     };
   }
@@ -137,6 +158,197 @@ test("server handles health, hash-api-key, and missing route locally", async () 
     assert.equal(writes.length, 0);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
+  }
+});
+
+test("server supports admin login and mapping CRUD", async () => {
+  const { app, port } = await startApp();
+
+  try {
+    const loginPage = await httpRequest(port, "/admin/login");
+    assert.equal(loginPage.statusCode, 200);
+    assert.match(loginPage.body, /Token 登录/);
+
+    const protectedPage = await httpRequest(port, "/admin/mappings");
+    assert.equal(protectedPage.statusCode, 302);
+    assert.equal(protectedPage.headers.location, "/admin/login");
+
+    const badLogin = await httpRequest(port, "/admin/api/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ token: "bad-token" }),
+    });
+    assert.equal(badLogin.statusCode, 401);
+
+    const goodLogin = await httpRequest(port, "/admin/api/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ token: "test-admin-token" }),
+    });
+    assert.equal(goodLogin.statusCode, 200);
+    assert.equal(Array.isArray(goodLogin.headers["set-cookie"]), true);
+
+    const cookieHeader = goodLogin.headers["set-cookie"][0].split(";")[0];
+
+    const initialMappings = await httpRequest(port, "/admin/api/mappings", {
+      headers: {
+        cookie: cookieHeader,
+      },
+    });
+    assert.equal(initialMappings.statusCode, 200);
+    assert.deepEqual(JSON.parse(initialMappings.body).mappings, []);
+
+    const saveMappings = await httpRequest(port, "/admin/api/mappings", {
+      method: "PUT",
+      headers: {
+        cookie: cookieHeader,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        mappings: [
+          { alias: "alias-gpt", target: "gpt-4.1" },
+          { alias: "alias-claude", target: "claude-3-7-sonnet" },
+        ],
+      }),
+    });
+    assert.equal(saveMappings.statusCode, 200);
+    assert.equal(JSON.parse(saveMappings.body).mappings.length, 2);
+
+    const readMappings = await httpRequest(port, "/admin/api/mappings", {
+      headers: {
+        cookie: cookieHeader,
+      },
+    });
+    assert.equal(readMappings.statusCode, 200);
+    assert.equal(JSON.parse(readMappings.body).mappings[0].alias, "alias-claude");
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+  }
+});
+
+test("server rewrites aliased model before proxying", async () => {
+  writes.length = 0;
+
+  const mappingFilePath = path.join(
+    os.tmpdir(),
+    `token-usage-sync-mappings-${randomUUID()}.json`,
+  );
+  await fs.writeFile(
+    mappingFilePath,
+    JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        mappings: [{ alias: "alias-gpt", target: "gpt-4.1" }],
+      },
+      null,
+      2,
+    ),
+  );
+
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      assert.equal(payload.model, "gpt-4.1");
+
+      res.writeHead(200, {
+        "content-type": "application/json",
+      });
+      res.end(
+        JSON.stringify({
+          id: "chatcmpl_rewrite",
+          model: "gpt-4.1",
+          choices: [
+            {
+              message: {
+                content: [{ text: "rewrite ok" }],
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: 3,
+            completion_tokens: 2,
+          },
+        }),
+      );
+    });
+  });
+
+  await new Promise((resolve) => upstream.listen(0, resolve));
+  const upstreamPort = upstream.address().port;
+
+  Module._load = function mockRewriteDeps(request, parent, isMain) {
+    if (request === "./config" || request.endsWith("/src/config")) {
+      return {
+        getConfig() {
+          return createMockConfig({
+            modelMappingFilePath: mappingFilePath,
+            upstreams: {
+              openai: `http://127.0.0.1:${upstreamPort}`,
+              anthropic: "http://127.0.0.1:1",
+              gemini: "http://127.0.0.1:1",
+            },
+          });
+        },
+      };
+    }
+
+    if (request === "./questdb-writer" || request.endsWith("/src/questdb-writer")) {
+      return {
+        QuestDbWriter: FakeQuestDbWriter,
+      };
+    }
+
+    if (request === "./tokenizer" || request.endsWith("/src/tokenizer")) {
+      const actual = originalLoad(request, parent, isMain);
+      return {
+        ...actual,
+        freeEncoders() {
+          freeEncodersCalls.push(true);
+        },
+      };
+    }
+
+    return originalLoad(request, parent, isMain);
+  };
+
+  delete require.cache[require.resolve("../src/server")];
+  const { createApp: createRewriteApp } = require("../src/server");
+  Module._load = originalLoad;
+
+  const app = createRewriteApp();
+  await app.start();
+  const port = app.server.address().port;
+
+  try {
+    const body = JSON.stringify({
+      model: "alias-gpt",
+      messages: [{ role: "user", content: "rewrite me" }],
+    });
+
+    const response = await httpRequest(port, "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+      },
+      body,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].status, "200_reported");
+    assert.equal(writes[0].modelId, "gpt-4.1");
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+    await fs.unlink(mappingFilePath).catch(() => {});
+    delete require.cache[require.resolve("../src/server")];
   }
 });
 
@@ -286,26 +498,13 @@ test("server records upstream request id, usage, and output from successful prox
     if (request === "./config" || request.endsWith("/src/config")) {
       return {
         getConfig() {
-          return {
-            port: 0,
-            requestCaptureLimitBytes: 1024 * 1024,
-            responseCaptureLimitBytes: 1024 * 1024,
-            contentLimitChars: 2000,
-            questdb: {
-              enabled: true,
-              configString: "http::addr=test",
-            },
-            routes: {
-              openaiPrefix: "/openai",
-              anthropicPrefix: "/anthropic",
-              geminiPrefix: "/gemini",
-            },
+          return createMockConfig({
             upstreams: {
               openai: `http://127.0.0.1:${upstreamPort}`,
               anthropic: "http://127.0.0.1:1",
               gemini: "http://127.0.0.1:1",
             },
-          };
+          });
         },
       };
     }
