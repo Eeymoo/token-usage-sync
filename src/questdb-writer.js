@@ -133,6 +133,8 @@ class QuestDbWriter {
     addBool(sender, "is_stream", record.isStream);
     addString(sender, "api_kind", record.apiKind);
     addString(sender, "model_id", record.modelId);
+    addString(sender, "model_mapped_from", record.modelMappedFrom);
+    addString(sender, "model_mapped_to", record.modelMappedTo);
     addString(sender, "user_id", record.userId);
     addInt(sender, "input_tokens", record.inputTokens);
     addInt(sender, "output_tokens", record.outputTokens);

@@ -1,6 +1,7 @@
 "use strict";
 
 const path = require("node:path");
+const { randomBytes } = require("node:crypto");
 
 function readInt(name, fallback) {
   const raw = process.env[name];
@@ -89,11 +90,25 @@ function getConfig() {
         "",
       acceptLanguage: process.env.ZAI_QUOTA_SYNC_ACCEPT_LANGUAGE || "en-US,en",
     },
-    admin: {
-      webToken: process.env.ADMIN_WEB_TOKEN || "",
-      sessionSecret: process.env.ADMIN_SESSION_SECRET || "token-usage-sync-admin-session",
-      sessionMaxAgeSeconds: readInt("ADMIN_SESSION_MAX_AGE_SECONDS", 24 * 60 * 60),
-    },
+    admin: (() => {
+      const webToken = process.env.ADMIN_WEB_TOKEN || "";
+      const explicitSecret = process.env.ADMIN_SESSION_SECRET;
+      let sessionSecret = explicitSecret;
+      if (!sessionSecret && webToken) {
+        sessionSecret = randomBytes(32).toString("hex");
+        console.warn(
+          "ADMIN_SESSION_SECRET is not set; generated an ephemeral random secret for this process. " +
+            "All admin sessions will be invalidated on restart. Set ADMIN_SESSION_SECRET explicitly for stable sessions.",
+        );
+      } else if (!sessionSecret) {
+        sessionSecret = "token-usage-sync-admin-session";
+      }
+      return {
+        webToken,
+        sessionSecret,
+        sessionMaxAgeSeconds: readInt("ADMIN_SESSION_MAX_AGE_SECONDS", 24 * 60 * 60),
+      };
+    })(),
     modelMapping: {
       filePath:
         process.env.MODEL_MAPPING_FILE ||

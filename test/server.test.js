@@ -576,3 +576,271 @@ test("server records upstream request id, usage, and output from successful prox
   }
 });
 
+test("server records model_mapped_from/to when alias is rewritten", async () => {
+  writes.length = 0;
+
+  const mappingFilePath = path.join(
+    os.tmpdir(),
+    `token-usage-sync-mappings-${randomUUID()}.json`,
+  );
+  await fs.writeFile(
+    mappingFilePath,
+    JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        mappings: [{ alias: "alias-gpt", target: "gpt-4.1" }],
+      },
+      null,
+      2,
+    ),
+  );
+
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: "chatcmpl_map",
+          model: "gpt-4.1",
+          choices: [{ message: { content: [{ text: "ok" }] } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+      );
+    });
+  });
+
+  await new Promise((resolve) => upstream.listen(0, resolve));
+  const upstreamPort = upstream.address().port;
+
+  Module._load = function mockMappedDeps(request, parent, isMain) {
+    if (request === "./config" || request.endsWith("/src/config")) {
+      return {
+        getConfig() {
+          return createMockConfig({
+            modelMappingFilePath: mappingFilePath,
+            upstreams: {
+              openai: `http://127.0.0.1:${upstreamPort}`,
+              anthropic: "http://127.0.0.1:1",
+              gemini: "http://127.0.0.1:1",
+            },
+          });
+        },
+      };
+    }
+    if (request === "./questdb-writer" || request.endsWith("/src/questdb-writer")) {
+      return { QuestDbWriter: FakeQuestDbWriter };
+    }
+    if (request === "./tokenizer" || request.endsWith("/src/tokenizer")) {
+      const actual = originalLoad(request, parent, isMain);
+      return { ...actual, freeEncoders() { freeEncodersCalls.push(true); } };
+    }
+    return originalLoad(request, parent, isMain);
+  };
+
+  delete require.cache[require.resolve("../src/server")];
+  const { createApp: createMappedApp } = require("../src/server");
+  Module._load = originalLoad;
+
+  const app = createMappedApp();
+  await app.start();
+  const port = app.server.address().port;
+
+  try {
+    const body = JSON.stringify({
+      model: "alias-gpt",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    const response = await httpRequest(port, "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+      },
+      body,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].modelMappedFrom, "alias-gpt");
+    assert.equal(writes[0].modelMappedTo, "gpt-4.1");
+    assert.equal(writes[0].modelId, "gpt-4.1");
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+    await fs.unlink(mappingFilePath).catch(() => {});
+    delete require.cache[require.resolve("../src/server")];
+  }
+});
+
+test("server falls through to streaming proxy when Content-Length exceeds capture limit", async () => {
+  writes.length = 0;
+
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf8");
+      assert.equal(text.length > 1024, true);
+
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: "chatcmpl_big",
+          model: "big-model",
+          choices: [{ message: { content: [{ text: "big ok" }] } }],
+          usage: { prompt_tokens: 5, completion_tokens: 1 },
+        }),
+      );
+    });
+  });
+
+  await new Promise((resolve) => upstream.listen(0, resolve));
+  const upstreamPort = upstream.address().port;
+
+  Module._load = function mockBigDeps(request, parent, isMain) {
+    if (request === "./config" || request.endsWith("/src/config")) {
+      return {
+        getConfig() {
+          return createMockConfig({
+            requestCaptureLimitBytes: 1024,
+            upstreams: {
+              openai: `http://127.0.0.1:${upstreamPort}`,
+              anthropic: "http://127.0.0.1:1",
+              gemini: "http://127.0.0.1:1",
+            },
+          });
+        },
+      };
+    }
+    if (request === "./questdb-writer" || request.endsWith("/src/questdb-writer")) {
+      return { QuestDbWriter: FakeQuestDbWriter };
+    }
+    if (request === "./tokenizer" || request.endsWith("/src/tokenizer")) {
+      const actual = originalLoad(request, parent, isMain);
+      return { ...actual, freeEncoders() { freeEncodersCalls.push(true); } };
+    }
+    return originalLoad(request, parent, isMain);
+  };
+
+  delete require.cache[require.resolve("../src/server")];
+  const { createApp: createBigApp } = require("../src/server");
+  Module._load = originalLoad;
+
+  const app = createBigApp();
+  await app.start();
+  const port = app.server.address().port;
+
+  try {
+    const bigContent = "x".repeat(2048);
+    const body = JSON.stringify({
+      model: "big-model",
+      messages: [{ role: "user", content: bigContent }],
+    });
+
+    const response = await httpRequest(port, "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+      },
+      body,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].modelId, "big-model");
+    assert.equal(writes[0].modelMappedFrom, null);
+    assert.equal(writes[0].modelMappedTo, null);
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+    delete require.cache[require.resolve("../src/server")];
+  }
+});
+
+test("server logout cookie includes Expires for max-age 0", async () => {
+  const { app, port } = await startApp();
+
+  try {
+    const logout = await httpRequest(port, "/admin/api/logout", { method: "POST" });
+    assert.equal(logout.statusCode, 200);
+    const cookie = logout.headers["set-cookie"][0];
+    assert.match(cookie, /Max-Age=0/);
+    assert.match(cookie, /Expires=Thu, 01 Jan 1970 00:00:00 GMT/);
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+  }
+});
+
+test("server rejects chunked body exceeding capture limit when no Content-Length is declared", async () => {
+  writes.length = 0;
+
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+
+  await new Promise((resolve) => upstream.listen(0, resolve));
+  const upstreamPort = upstream.address().port;
+
+  Module._load = function mockSmallLimitDeps(request, parent, isMain) {
+    if (request === "./config" || request.endsWith("/src/config")) {
+      return {
+        getConfig() {
+          return createMockConfig({
+            requestCaptureLimitBytes: 64,
+            upstreams: {
+              openai: `http://127.0.0.1:${upstreamPort}`,
+              anthropic: "http://127.0.0.1:1",
+              gemini: "http://127.0.0.1:1",
+            },
+          });
+        },
+      };
+    }
+    if (request === "./questdb-writer" || request.endsWith("/src/questdb-writer")) {
+      return { QuestDbWriter: FakeQuestDbWriter };
+    }
+    if (request === "./tokenizer" || request.endsWith("/src/tokenizer")) {
+      const actual = originalLoad(request, parent, isMain);
+      return { ...actual, freeEncoders() { freeEncodersCalls.push(true); } };
+    }
+    return originalLoad(request, parent, isMain);
+  };
+
+  delete require.cache[require.resolve("../src/server")];
+  const { createApp: createSmallLimitApp } = require("../src/server");
+  Module._load = originalLoad;
+
+  const app = createSmallLimitApp();
+  await app.start();
+  const port = app.server.address().port;
+
+  try {
+    const body = JSON.stringify({
+      model: "test",
+      messages: [{ role: "user", content: "x".repeat(512) }],
+    });
+
+    const response = await httpRequest(port, "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body,
+    });
+
+    assert.equal(response.statusCode, 413);
+    assert.match(response.body, /request_too_large/);
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+    delete require.cache[require.resolve("../src/server")];
+  }
+});
+
